@@ -76,7 +76,7 @@ def decodificar_archivo(bytes_archivo):
     return bytes_archivo.decode('latin-1', errors='replace'), 'latin-1'
 
 # ============================================================
-# PROCESAR TXT - RESPETANDO LA ESTRUCTURA DE CAMPOS
+# PROCESAR TXT - VERSIÓN CON POSICIONES CORRECTAS
 # ============================================================
 def procesar_txt(contenido, pesos_dict):
     lineas = contenido.strip().split('\n')
@@ -92,8 +92,8 @@ def procesar_txt(contenido, pesos_dict):
         # Dividir por punto y coma
         campos = linea.split(';')
         
-        # Verificar que tenga al menos 36 campos
-        if len(campos) < 36:
+        # Verificar que tenga al menos 35 campos
+        if len(campos) < 35:
             continue
         
         # Campo 2: Número de Remito
@@ -109,8 +109,8 @@ def procesar_txt(contenido, pesos_dict):
         # Campo 8: Cliente
         cliente = campos[7].strip() if len(campos) > 7 else "S/C"
         
-        # Campo 30: Código del producto (7 dígitos)
-        codigo_str = campos[29].strip() if len(campos) > 29 else ""
+        # Campo 29: Código del producto (7 dígitos) - IMPORTANTE: es campo 29 (índice 28)
+        codigo_str = campos[28].strip() if len(campos) > 28 else ""
         
         # Validar que sea un código de 7 dígitos
         if not codigo_str.isdigit() or len(codigo_str) != 7:
@@ -122,10 +122,10 @@ def procesar_txt(contenido, pesos_dict):
         if codigo not in codigos_validos:
             continue
         
-        # Campo 36: Cantidad (formato 0000001.00)
-        cantidad_str = campos[35].strip() if len(campos) > 35 else ""
+        # Campo 35: Cantidad (formato 0000010.00) - IMPORTANTE: es campo 35 (índice 34)
+        cantidad_str = campos[34].strip() if len(campos) > 34 else ""
         
-        # Extraer cantidad del formato 000000X.XX
+        # Extraer cantidad del formato 0000010.00
         cantidad_match = re.search(r'0{6}(\d+)\.(\d{2})', cantidad_str)
         if not cantidad_match:
             continue
