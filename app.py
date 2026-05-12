@@ -3,6 +3,7 @@ import pandas as pd
 from io import BytesIO
 import re
 import requests
+from datetime import datetime
 
 st.set_page_config(page_title="CALCULADORA INTERFACE A KILOS 1.0", page_icon="🍺", layout="wide")
 
@@ -29,7 +30,6 @@ def cargar_pesos_desde_github():
         df = pd.read_excel("temp_pesos.xlsx", sheet_name='Hoja2')
         df = df.dropna(how='all')
         
-        # Buscar fila de encabezados
         encabezado_fila = None
         for i, row in df.iterrows():
             if row.astype(str).str.contains('CODIGO', case=False, na=False).any():
@@ -76,7 +76,7 @@ def decodificar_archivo(bytes_archivo):
     return bytes_archivo.decode('latin-1', errors='replace'), 'latin-1'
 
 # ============================================================
-# PROCESAR TXT - VERSIÓN DEFINITIVA CORREGIDA
+# PROCESAR TXT - RESPETANDO LA ESTRUCTURA DE CAMPOS
 # ============================================================
 def procesar_txt(contenido, pesos_dict):
     lineas = contenido.strip().split('\n')
@@ -89,66 +89,72 @@ def procesar_txt(contenido, pesos_dict):
         if not linea or 'ORIGEN' in linea:
             continue
         
-        # Extraer remito (siempre está en el segundo campo)
-        partes = linea.split(';')
-        if len(partes) > 1:
-            nro_remito = partes[1].strip()
+        # Dividir por punto y coma
+        campos = linea.split(';')
+        
+        # Verificar que tenga al menos 36 campos
+        if len(campos) < 36:
+            continue
+        
+        # Campo 2: Número de Remito
+        nro_remito = campos[1].strip() if len(campos) > 1 else "DESCONOCIDO"
+        
+        # Campo 3: Fecha (YYYYMMDD)
+        fecha_raw = campos[2].strip() if len(campos) > 2 else ""
+        if len(fecha_raw) == 8 and fecha_raw.isdigit():
+            fecha = f"{fecha_raw[6:8]}/{fecha_raw[4:6]}/{fecha_raw[0:4]}"
         else:
-            nro_remito = "DESCONOCIDO"
+            fecha = fecha_raw
         
-        # Extraer fecha (tercer campo)
-        if len(partes) > 2:
-            fecha_raw = partes[2].strip()
-            if len(fecha_raw) == 8 and fecha_raw.isdigit():
-                fecha = f"{fecha_raw[6:8]}/{fecha_raw[4:6]}/{fecha_raw[0:4]}"
-            else:
-                fecha = fecha_raw
-        else:
-            fecha = "S/F"
+        # Campo 8: Cliente
+        cliente = campos[7].strip() if len(campos) > 7 else "S/C"
         
-        # Extraer cliente (octavo campo)
-        if len(partes) > 7:
-            cliente = partes[7].strip()
-        else:
-            cliente = "S/C"
+        # Campo 30: Código del producto (7 dígitos)
+        codigo_str = campos[29].strip() if len(campos) > 29 else ""
         
-        # Buscar TODOS los códigos de 7 dígitos en la línea
-        codigos_encontrados = re.findall(r'\b(\d{7})\b', linea)
+        # Validar que sea un código de 7 dígitos
+        if not codigo_str.isdigit() or len(codigo_str) != 7:
+            continue
         
-        for codigo_str in codigos_encontrados:
-            codigo = int(codigo_str)
-            
-            # VALIDACIÓN CRÍTICA: solo aceptar códigos que existen en el Excel
-            if codigo not in codigos_validos:
-                continue
-            
-            # Buscar cantidad asociada a este código
-            cantidad = 0
-            pos_codigo = linea.find(codigo_str)
-            if pos_codigo != -1:
-                resto_linea = linea[pos_codigo:]
-                cantidad_match = re.search(r'0{6}(\d+)\.(\d{2})', resto_linea)
-                if cantidad_match:
-                    cantidad = float(f"{cantidad_match.group(1)}.{cantidad_match.group(2)}")
-            
-            if cantidad == 0:
-                continue
-            
-            productos.append({
-                'remito': nro_remito,
-                'fecha': fecha,
-                'cliente': cliente,
-                'codigo': codigo,
-                'cantidad': cantidad,
-                'linea': num_linea
-            })
+        codigo = int(codigo_str)
+        
+        # Validar que el código exista en el Excel
+        if codigo not in codigos_validos:
+            continue
+        
+        # Campo 36: Cantidad (formato 0000001.00)
+        cantidad_str = campos[35].strip() if len(campos) > 35 else ""
+        
+        # Extraer cantidad del formato 000000X.XX
+        cantidad_match = re.search(r'0{6}(\d+)\.(\d{2})', cantidad_str)
+        if not cantidad_match:
+            continue
+        
+        cantidad = float(f"{cantidad_match.group(1)}.{cantidad_match.group(2)}")
+        
+        if cantidad == 0:
+            continue
+        
+        productos.append({
+            'remito': nro_remito,
+            'fecha': fecha,
+            'cliente': cliente,
+            'codigo': codigo,
+            'cantidad': cantidad,
+            'linea': num_linea
+        })
     
     if not productos:
-        return None, "No se encontraron productos válidos en el archivo", pd.DataFrame()
+        return None, "No se encontraron productos válidos", pd.DataFrame()
     
+    # Agrupar por remito y código (sumar cantidades)
     df = pd.DataFrame(productos)
+    df = df.groupby(['remito', 'codigo'], as_index=False).agg({
+        'cantidad': 'sum',
+        'fecha': 'first',
+        'cliente': 'first'
+    })
     
-    # Agregar pesos
     df['peso_unitario'] = df['codigo'].map(pesos_dict).fillna(0)
     df['peso_total_item'] = df['cantidad'] * df['peso_unitario']
     
@@ -165,6 +171,13 @@ def procesar_txt(contenido, pesos_dict):
     resumen = resumen[['Fecha', 'N° Remito', 'Cliente', 'Total Bultos', 'Peso Total (kg)']]
     
     return resumen, [], df
+
+# ============================================================
+# GENERAR NOMBRE DE ARCHIVO CON TIMESTAMP
+# ============================================================
+def generar_nombre_reporte():
+    ahora = datetime.now()
+    return f"reporte_remitos ({ahora.strftime('%Y%m%d%H%M')}).xlsx"
 
 # ============================================================
 # INTERFAZ PRINCIPAL
@@ -206,31 +219,30 @@ if archivo_subido is not None:
         # Generar Excel con 3 solapas
         output = BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            # Solapa 1: Resumen por Remito
             resultado.to_excel(writer, sheet_name='Resumen por Remito', index=False)
             
-            # Solapa 2: Detalle por Artículo
             detalle_export = detalle_productos[['remito', 'codigo', 'cantidad', 'peso_unitario', 'peso_total_item']].copy()
             detalle_export.columns = ['N° Remito', 'Código Artículo', 'Cantidad Bultos', 'Peso Unitario (kg)', 'Subtotal (kg)']
             detalle_export.to_excel(writer, sheet_name='Detalle por Artículo', index=False)
             
-            # Solapa 3: Estadísticas
             stats_data = [
                 {'Indicador': 'Total Remitos', 'Valor': len(resultado)},
                 {'Indicador': 'Total Bultos', 'Valor': int(resultado['Total Bultos'].sum())},
                 {'Indicador': 'Peso Total General (kg)', 'Valor': round(resultado['Peso Total (kg)'].sum(), 2)},
                 {'Indicador': 'Códigos procesados', 'Valor': len(detalle_productos)},
-                {'Indicador': 'Fecha de procesamiento', 'Valor': pd.Timestamp.now().strftime('%d/%m/%Y %H:%M:%S')}
+                {'Indicador': 'Fecha de procesamiento', 'Valor': datetime.now().strftime('%d/%m/%Y %H:%M:%S')}
             ]
             df_stats = pd.DataFrame(stats_data)
             df_stats.to_excel(writer, sheet_name='Estadísticas', index=False)
         
+        nombre_reporte = generar_nombre_reporte()
+        
         st.download_button(
             label="📥 Descargar Reporte Excel",
             data=output.getvalue(),
-            file_name="reporte_remitos.xlsx",
+            file_name=nombre_reporte,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
         
     else:
-        st.error(f"❌ No se encontraron datos válidos en el archivo")
+        st.error("❌ No se encontraron datos válidos en el archivo")
