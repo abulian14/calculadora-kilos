@@ -12,7 +12,7 @@ st.markdown("Subí el archivo TXT con los datos de los remitos y obtené el peso
 # ============================================================
 # URL DEL EXCEL EN GITHUB (CONFIGURADA PARA abulian14)
 # ============================================================
-URL_EXCEL_GITHUB = "https://raw.githubusercontent.com/abulian14/lector-interface-excel/main/PESO%20X%20ARTICULOO.xlsx"
+URL_EXCEL_GITHUB = "https://raw.githubusercontent.com/abulian14/calculadora-kilos/main/PESO%20X%20ARTICULOO.xlsx"
 
 # ============================================================
 # BASE DE DATOS DE PESOS POR DEFECTO (fallback)
