@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 from io import BytesIO
-import re
 import requests
 from datetime import datetime
 
@@ -23,42 +22,32 @@ def cargar_pesos_desde_github():
     try:
         response = requests.get(URL_EXCEL_GITHUB)
         response.raise_for_status()
-        
         with open("temp_pesos.xlsx", "wb") as f:
             f.write(response.content)
-        
         df = pd.read_excel("temp_pesos.xlsx", sheet_name='Hoja2')
         df = df.dropna(how='all')
-        
         encabezado_fila = None
         for i, row in df.iterrows():
             if row.astype(str).str.contains('CODIGO', case=False, na=False).any():
                 encabezado_fila = i
                 break
-        
         if encabezado_fila is not None:
             df = pd.read_excel("temp_pesos.xlsx", sheet_name='Hoja2', header=encabezado_fila)
-        
         col_codigo = None
         col_peso = None
-        
         for col in df.columns:
             col_str = str(col).upper().strip()
             if 'CODIGO' in col_str or 'COD' in col_str:
                 col_codigo = col
             if 'PESO' in col_str or 'KG' in col_str:
                 col_peso = col
-        
         if col_codigo is None or col_peso is None:
             return {}, f"❌ No se encontraron columnas 'CODIGO' y 'PESO'"
-        
         df[col_codigo] = pd.to_numeric(df[col_codigo], errors='coerce')
         df[col_peso] = pd.to_numeric(df[col_peso], errors='coerce')
         df = df.dropna(subset=[col_codigo, col_peso])
-        
         pesos = dict(zip(df[col_codigo].astype(int), df[col_peso]))
         return pesos, f"✅ Cargados {len(pesos)} productos desde GitHub"
-        
     except Exception as e:
         return {}, f"❌ Error al cargar Excel: {str(e)}"
 
@@ -76,11 +65,10 @@ def decodificar_archivo(bytes_archivo):
     return bytes_archivo.decode('latin-1', errors='replace'), 'latin-1'
 
 # ============================================================
-# PROCESAR TXT - VERSIÓN CON POSICIONES CORRECTAS
+# PROCESAR TXT - USANDO COLUMNAS FIJAS (29 y 35)
 # ============================================================
 def procesar_txt(contenido, pesos_dict):
     lineas = contenido.strip().split('\n')
-    
     productos = []
     codigos_validos = set(pesos_dict.keys())
     
@@ -89,72 +77,53 @@ def procesar_txt(contenido, pesos_dict):
         if not linea or 'ORIGEN' in linea:
             continue
         
-        # Dividir por punto y coma
         campos = linea.split(';')
         
-        # Verificar que tenga al menos 35 campos
+        # Necesitamos al menos 35 columnas
         if len(campos) < 35:
             continue
         
-        # Campo 2: Número de Remito
-        nro_remito = campos[1].strip() if len(campos) > 1 else "DESCONOCIDO"
+        # Extraer por índice fijo (0-indexado)
+        nro_remito = campos[1].strip()      # columna 2
+        fecha_raw = campos[2].strip()       # columna 3
+        cliente = campos[7].strip()         # columna 8
+        codigo_str = campos[28].strip()     # columna 29
+        cantidad_str = campos[34].strip()   # columna 35
         
-        # Campo 3: Fecha (YYYYMMDD)
-        fecha_raw = campos[2].strip() if len(campos) > 2 else ""
-        if len(fecha_raw) == 8 and fecha_raw.isdigit():
-            fecha = f"{fecha_raw[6:8]}/{fecha_raw[4:6]}/{fecha_raw[0:4]}"
-        else:
-            fecha = fecha_raw
-        
-        # Campo 8: Cliente
-        cliente = campos[7].strip() if len(campos) > 7 else "S/C"
-        
-        # Campo 29: Código del producto (7 dígitos) - IMPORTANTE: es campo 29 (índice 28)
-        codigo_str = campos[28].strip() if len(campos) > 28 else ""
-        
-        # Validar que sea un código de 7 dígitos
+        # Validar código
         if not codigo_str.isdigit() or len(codigo_str) != 7:
             continue
         
         codigo = int(codigo_str)
-        
-        # Validar que el código exista en el Excel
         if codigo not in codigos_validos:
             continue
         
-        # Campo 35: Cantidad (formato 0000010.00) - IMPORTANTE: es campo 35 (índice 34)
-        cantidad_str = campos[34].strip() if len(campos) > 34 else ""
-        
-        # Extraer cantidad del formato 0000010.00
-        cantidad_match = re.search(r'0{6}(\d+)\.(\d{2})', cantidad_str)
-        if not cantidad_match:
+        # Validar cantidad
+        if not cantidad_str or not cantidad_str.replace('.', '').isdigit():
             continue
         
-        cantidad = float(f"{cantidad_match.group(1)}.{cantidad_match.group(2)}")
-        
+        cantidad = float(cantidad_str)
         if cantidad == 0:
             continue
+        
+        # Formatear fecha
+        if len(fecha_raw) == 8 and fecha_raw.isdigit():
+            fecha = f"{fecha_raw[6:8]}/{fecha_raw[4:6]}/{fecha_raw[0:4]}"
+        else:
+            fecha = fecha_raw
         
         productos.append({
             'remito': nro_remito,
             'fecha': fecha,
             'cliente': cliente,
             'codigo': codigo,
-            'cantidad': cantidad,
-            'linea': num_linea
+            'cantidad': cantidad
         })
     
     if not productos:
         return None, "No se encontraron productos válidos", pd.DataFrame()
     
-    # Agrupar por remito y código (sumar cantidades)
     df = pd.DataFrame(productos)
-    df = df.groupby(['remito', 'codigo'], as_index=False).agg({
-        'cantidad': 'sum',
-        'fecha': 'first',
-        'cliente': 'first'
-    })
-    
     df['peso_unitario'] = df['codigo'].map(pesos_dict).fillna(0)
     df['peso_total_item'] = df['cantidad'] * df['peso_unitario']
     
@@ -173,7 +142,7 @@ def procesar_txt(contenido, pesos_dict):
     return resumen, [], df
 
 # ============================================================
-# GENERAR NOMBRE DE ARCHIVO CON TIMESTAMP
+# GENERAR NOMBRE DE ARCHIVO
 # ============================================================
 def generar_nombre_reporte():
     ahora = datetime.now()
@@ -204,8 +173,6 @@ if archivo_subido is not None:
     
     if resultado is not None and not resultado.empty:
         st.success(f"✅ Procesado! {len(resultado)} remitos encontrados")
-        
-        st.subheader("📊 Resumen por Remito")
         st.dataframe(resultado, use_container_width=True)
         
         col1, col2, col3 = st.columns(3)
@@ -214,17 +181,14 @@ if archivo_subido is not None:
         col3.metric("Peso Total", f"{resultado['Peso Total (kg)'].sum():.2f} kg")
         
         with st.expander("🔍 Ver detalle de productos detectados"):
-            st.dataframe(detalle_productos[['remito', 'codigo', 'cantidad', 'peso_unitario', 'peso_total_item']], use_container_width=True)
+            st.dataframe(detalle_productos[['remito', 'codigo', 'cantidad', 'peso_unitario', 'peso_total_item']])
         
-        # Generar Excel con 3 solapas
         output = BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             resultado.to_excel(writer, sheet_name='Resumen por Remito', index=False)
-            
             detalle_export = detalle_productos[['remito', 'codigo', 'cantidad', 'peso_unitario', 'peso_total_item']].copy()
             detalle_export.columns = ['N° Remito', 'Código Artículo', 'Cantidad Bultos', 'Peso Unitario (kg)', 'Subtotal (kg)']
             detalle_export.to_excel(writer, sheet_name='Detalle por Artículo', index=False)
-            
             stats_data = [
                 {'Indicador': 'Total Remitos', 'Valor': len(resultado)},
                 {'Indicador': 'Total Bultos', 'Valor': int(resultado['Total Bultos'].sum())},
@@ -235,14 +199,11 @@ if archivo_subido is not None:
             df_stats = pd.DataFrame(stats_data)
             df_stats.to_excel(writer, sheet_name='Estadísticas', index=False)
         
-        nombre_reporte = generar_nombre_reporte()
-        
         st.download_button(
             label="📥 Descargar Reporte Excel",
             data=output.getvalue(),
-            file_name=nombre_reporte,
+            file_name=generar_nombre_reporte(),
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
-        
     else:
         st.error("❌ No se encontraron datos válidos en el archivo")
